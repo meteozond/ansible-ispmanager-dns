@@ -1,0 +1,12 @@
+namespace: ispmanager
+name: dns
+version: 1.0.0
+readme: README.md
+authors:
+  - Alexander Klimenko <alex@erix.ru>
+description: Manage DNS records via ISPmanager API
+license_file: LICENSE
+tags:
+  - dns
+  - ispmanager
+repository: https://github.com/meteozond/ansible-ispmanager-dns

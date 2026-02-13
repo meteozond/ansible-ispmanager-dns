@@ -1,0 +1,122 @@
+---
+# Manage DNS records via ISPmanager API
+#
+# Required vars:
+#   isp_url: ISPmanager URL (https://host:1500)
+#   isp_user: login
+#   isp_pass: password
+#   domains: dict of domains with records
+#
+# Optional vars:
+#   deleted_domains: dict of records to delete
+#   dns_domain: limit to specific domain
+
+- name: Flatten DNS records
+  ansible.builtin.set_fact:
+    manage_dns_records: >-
+      {%- set r = [] -%}
+      {%- for d, ts in domains.items() -%}
+        {%- for t, rs in ts.items() -%}
+          {%- for n, v in rs.items() -%}
+            {%- set _ = r.append({'domain': d, 'type': t | upper, 'name': n, 'value': [v] if v is string else v}) -%}
+          {%- endfor -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ r }}
+  tags: [dns, add]
+
+- name: Gather current DNS records
+  ispmanager.dns.facts:
+    api_url: "{{ isp_url }}"
+    username: "{{ isp_user }}"
+    password: "{{ isp_pass }}"
+    domains: "{{ domains.keys() | list }}"
+  tags: [dns, facts]
+
+- name: Find records to change
+  ansible.builtin.set_fact:
+    manage_dns_changes: >-
+      {%- set out = [] -%}
+      {%- for r in manage_dns_records -%}
+        {%- set apex = ['@', '', r.domain, r.domain + '.'] -%}
+        {%- set vals = [] -%}
+        {%- for c in ispmanager_dns.get(r.domain, []) -%}
+          {%- if c.type | upper == r.type and
+                 ((r.name == '@' and c.name in apex) or c.name == r.name) -%}
+            {%- set _ = vals.append(c.addr) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- if vals | unique | sort | list != r.value | sort -%}
+          {%- set _ = out.append(r | combine({'_existing': vals | unique | sort | list})) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  tags: [dns, add]
+
+- name: Show changes
+  ansible.builtin.debug:
+    msg: |
+      {{ manage_dns_changes | length }} records to change:
+      {% for c in manage_dns_changes %}
+      - {{ c.type }} {{ c.name }}.{{ c.domain }}
+        desired:  {{ c.value | sort }}
+        existing: {{ c._existing | sort }}
+      {% endfor %}
+  when: manage_dns_changes | length > 0
+  tags: [dns, add, debug]
+
+- name: Manage DNS records
+  ispmanager.dns.record:
+    api_url: "{{ isp_url }}"
+    username: "{{ isp_user }}"
+    password: "{{ isp_pass }}"
+    domain: "{{ item.domain }}"
+    name: "{{ item.name }}"
+    type: "{{ item.type }}"
+    value: "{{ item.value }}"
+  loop: "{{ manage_dns_changes }}"
+  loop_control:
+    label: "{{ item.type }} {{ item.name }}.{{ item.domain }}"
+  when: dns_domain is not defined or item.domain == dns_domain
+  tags: [dns, add]
+
+- name: Flatten deleted DNS records
+  ansible.builtin.set_fact:
+    manage_dns_to_delete: >-
+      {%- set r = [] -%}
+      {%- for d, ts in (deleted_domains | default({})).items() -%}
+        {%- for t, rs in ts.items() -%}
+          {%- for n, v in rs.items() -%}
+            {%- set _ = r.append({'domain': d, 'type': t | upper, 'name': n, 'value': v}) -%}
+          {%- endfor -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ r }}
+  when: (deleted_domains | default({})) | length > 0
+  tags: [dns, delete]
+
+- name: Show deletions
+  ansible.builtin.debug:
+    msg: |
+      {{ manage_dns_to_delete | length }} records to delete:
+      {% for c in manage_dns_to_delete %}
+      - {{ c.type }} {{ c.name }}.{{ c.domain }} = {{ c.value }}
+      {% endfor %}
+  when: (manage_dns_to_delete | default([])) | length > 0
+  tags: [dns, delete, debug]
+
+- name: Delete DNS records
+  ispmanager.dns.record:
+    api_url: "{{ isp_url }}"
+    username: "{{ isp_user }}"
+    password: "{{ isp_pass }}"
+    domain: "{{ item.domain }}"
+    name: "{{ item.name }}"
+    type: "{{ item.type }}"
+    value: "{{ item.value }}"
+    state: absent
+  loop: "{{ manage_dns_to_delete | default([]) }}"
+  loop_control:
+    label: "{{ item.type }} {{ item.name }}.{{ item.domain }}"
+  when: dns_domain is not defined or item.domain == dns_domain
+  tags: [dns, delete]
